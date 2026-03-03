@@ -4,6 +4,7 @@
 #include <string>
 #include <queue>
 #include <mutex>
+#include <vector>
 #include "Log.h"
 
 #if defined(SQL_CONNPOOL_DISABLE_MYSQL)
@@ -20,6 +21,11 @@ struct MYSQL_RES;
 #define SQL_CONNPOOL_HAS_MYSQL 0
 struct MYSQL;
 struct MYSQL_RES;
+#endif
+
+#if SQL_CONNPOOL_HAS_MYSQL
+#include <openssl/evp.h>
+#include <openssl/rand.h>
 #endif
 
 class SqlConnPool {
@@ -65,6 +71,7 @@ public:
                 mysql_close(sql);
                 continue;
             }
+            ensureAuthSchema_(sql);
             connQue_.push(sql);
             successCnt++;
         }
@@ -109,42 +116,56 @@ public:
 #if SQL_CONNPOOL_HAS_MYSQL
         MYSQL* sql = GetConn();
         if (!sql) return false;
+        ensureAuthSchema_(sql);
 
-        std::string userEsc(username.size() * 2 + 1, '\0');
-        unsigned long userLen = mysql_real_escape_string(sql, &userEsc[0], username.c_str(), username.size());
-        userEsc.resize(userLen);
+        std::string userEsc = escapeString_(sql, username);
+        bool hasLegacy = columnExists_(sql, "password");
+        std::string query = hasLegacy
+            ? "SELECT password_hash, password_salt, password FROM user WHERE username='" + userEsc + "' LIMIT 1"
+            : "SELECT password_hash, password_salt, '' FROM user WHERE username='" + userEsc + "' LIMIT 1";
 
-        std::string passEsc(password.size() * 2 + 1, '\0');
-        unsigned long passLen = mysql_real_escape_string(sql, &passEsc[0], password.c_str(), password.size());
-        passEsc.resize(passLen);
-
-        std::string query = "SELECT username FROM user WHERE username='" + userEsc +
-                            "' AND password='" + passEsc + "' LIMIT 1";
-        bool exists = false;
-
-        if (mysql_query(sql, query.c_str()) == 0) {
-            MYSQL_RES* res = mysql_store_result(sql);
-            if (res) {
-                exists = (mysql_num_rows(res) > 0);
-                mysql_free_result(res);
-            }
-        } else if (mysql_errno(sql) == 1054) {
-            // Compatible with legacy schema: table `user` only has `username`.
-            std::string legacyQuery = "SELECT username FROM user WHERE username='" + userEsc + "' LIMIT 1";
-            if (mysql_query(sql, legacyQuery.c_str()) == 0) {
-                MYSQL_RES* res = mysql_store_result(sql);
-                if (res) {
-                    exists = (mysql_num_rows(res) > 0);
-                    mysql_free_result(res);
-                }
-            } else {
-                LOG_ERROR("SQL Query Error!");
-            }
-        } else {
+        bool ok = false;
+        if (mysql_query(sql, query.c_str()) != 0) {
             LOG_ERROR("SQL Query Error!");
+            FreeConn(sql);
+            return false;
         }
+        MYSQL_RES* res = mysql_store_result(sql);
+        if (!res) {
+            FreeConn(sql);
+            return false;
+        }
+        MYSQL_ROW row = mysql_fetch_row(res);
+        if (!row) {
+            mysql_free_result(res);
+            FreeConn(sql);
+            return false;
+        }
+        std::string hash = row[0] ? row[0] : "";
+        std::string salt = row[1] ? row[1] : "";
+        std::string legacyPass = row[2] ? row[2] : "";
+        mysql_free_result(res);
+
+        if (!hash.empty() && !salt.empty()) {
+            std::string calcHash;
+            if (hashPassword_(password, salt, calcHash)) {
+                ok = (calcHash == hash);
+            }
+        } else if (hasLegacy && !legacyPass.empty() && legacyPass == password) {
+            // One-time upgrade for old plaintext rows.
+            std::string saltHex;
+            std::string hashHex;
+            if (generateSalt_(saltHex) && hashPassword_(password, saltHex, hashHex)) {
+                std::string upgrade =
+                    "UPDATE user SET password_hash='" + hashHex + "', password_salt='" + saltHex +
+                    "', password='' WHERE username='" + userEsc + "' LIMIT 1";
+                mysql_query(sql, upgrade.c_str());
+                ok = true;
+            }
+        }
+
         FreeConn(sql);
-        return exists;
+        return ok;
 #else
         (void)username;
         (void)password;
@@ -184,24 +205,25 @@ public:
 #if SQL_CONNPOOL_HAS_MYSQL
         MYSQL* sql = GetConn();
         if (!sql) return false;
+        ensureAuthSchema_(sql);
 
-        std::string userEsc(username.size() * 2 + 1, '\0');
-        unsigned long userLen = mysql_real_escape_string(sql, &userEsc[0], username.c_str(), username.size());
-        userEsc.resize(userLen);
+        std::string userEsc = escapeString_(sql, username);
+        std::string saltHex;
+        std::string hashHex;
+        if (!generateSalt_(saltHex) || !hashPassword_(password, saltHex, hashHex)) {
+            FreeConn(sql);
+            return false;
+        }
 
-        std::string passEsc(password.size() * 2 + 1, '\0');
-        unsigned long passLen = mysql_real_escape_string(sql, &passEsc[0], password.c_str(), password.size());
-        passEsc.resize(passLen);
-
-        std::string query = "INSERT INTO user(username, password) VALUES('" + userEsc + "', '" + passEsc + "')";
+        bool hasLegacy = columnExists_(sql, "password");
+        std::string query = hasLegacy
+            ? "INSERT INTO user(username, password_hash, password_salt, password) VALUES('" +
+                  userEsc + "', '" + hashHex + "', '" + saltHex + "', '')"
+            : "INSERT INTO user(username, password_hash, password_salt) VALUES('" +
+                  userEsc + "', '" + hashHex + "', '" + saltHex + "')";
         bool ok = false;
         if (mysql_query(sql, query.c_str()) == 0) {
             ok = true;
-        } else if (mysql_errno(sql) == 1054) {
-            // Compatible with legacy schema: table `user` only has `username`.
-            std::string legacyQuery = "INSERT INTO user(username) VALUES('" + userEsc + "')";
-            ok = (mysql_query(sql, legacyQuery.c_str()) == 0);
-            if (!ok) LOG_ERROR("SQL Insert Error!");
         } else if (mysql_errno(sql) == 1062) {
             ok = false;
         } else {
@@ -218,6 +240,123 @@ public:
     }
 
 private:
+#if SQL_CONNPOOL_HAS_MYSQL
+    std::string escapeString_(MYSQL* sql, const std::string& in) {
+        std::string out(in.size() * 2 + 1, '\0');
+        unsigned long len = mysql_real_escape_string(sql, &out[0], in.c_str(), in.size());
+        out.resize(len);
+        return out;
+    }
+
+    std::string bytesToHex_(const unsigned char* data, size_t len) {
+        static const char HEX[] = "0123456789abcdef";
+        std::string out;
+        out.resize(len * 2);
+        for (size_t i = 0; i < len; ++i) {
+            out[2 * i] = HEX[(data[i] >> 4) & 0x0F];
+            out[2 * i + 1] = HEX[data[i] & 0x0F];
+        }
+        return out;
+    }
+
+    bool hexToBytes_(const std::string& hex, std::vector<unsigned char>& out) {
+        auto val = [](char c) -> int {
+            if (c >= '0' && c <= '9') return c - '0';
+            if (c >= 'a' && c <= 'f') return 10 + (c - 'a');
+            if (c >= 'A' && c <= 'F') return 10 + (c - 'A');
+            return -1;
+        };
+        if (hex.size() % 2 != 0) return false;
+        out.clear();
+        out.reserve(hex.size() / 2);
+        for (size_t i = 0; i < hex.size(); i += 2) {
+            int hi = val(hex[i]);
+            int lo = val(hex[i + 1]);
+            if (hi < 0 || lo < 0) return false;
+            out.push_back(static_cast<unsigned char>((hi << 4) | lo));
+        }
+        return true;
+    }
+
+    bool generateSalt_(std::string& saltHex) {
+        unsigned char salt[16];
+        if (RAND_bytes(salt, sizeof(salt)) != 1) return false;
+        saltHex = bytesToHex_(salt, sizeof(salt));
+        return true;
+    }
+
+    bool hashPassword_(const std::string& password, const std::string& saltHex, std::string& hashHex) {
+        std::vector<unsigned char> salt;
+        if (!hexToBytes_(saltHex, salt)) return false;
+        unsigned char out[32];
+        const int iterations = 120000;
+        if (PKCS5_PBKDF2_HMAC(password.c_str(), static_cast<int>(password.size()),
+                              salt.data(), static_cast<int>(salt.size()),
+                              iterations, EVP_sha256(), sizeof(out), out) != 1) {
+            return false;
+        }
+        hashHex = bytesToHex_(out, sizeof(out));
+        return true;
+    }
+
+    bool columnExists_(MYSQL* sql, const std::string& col) {
+        std::string query =
+            "SELECT 1 FROM information_schema.columns WHERE table_schema=DATABASE() "
+            "AND table_name='user' AND column_name='" + escapeString_(sql, col) + "' LIMIT 1";
+        if (mysql_query(sql, query.c_str()) != 0) return false;
+        MYSQL_RES* res = mysql_store_result(sql);
+        if (!res) return false;
+        bool exists = mysql_num_rows(res) > 0;
+        mysql_free_result(res);
+        return exists;
+    }
+
+    void ensureAuthSchema_(MYSQL* sql) {
+        if (schemaReady_) return;
+
+        bool hasHash = columnExists_(sql, "password_hash");
+        bool hasSalt = columnExists_(sql, "password_salt");
+        bool hasLegacy = columnExists_(sql, "password");
+
+        if (!hasHash) {
+            mysql_query(sql, "ALTER TABLE user ADD COLUMN password_hash VARCHAR(128) NOT NULL DEFAULT ''");
+        }
+        if (!hasSalt) {
+            mysql_query(sql, "ALTER TABLE user ADD COLUMN password_salt VARCHAR(64) NOT NULL DEFAULT ''");
+        }
+
+        hasHash = columnExists_(sql, "password_hash");
+        hasSalt = columnExists_(sql, "password_salt");
+        hasLegacy = columnExists_(sql, "password");
+
+        if (hasHash && hasSalt && hasLegacy) {
+            if (mysql_query(sql,
+                "SELECT id, password FROM user WHERE password IS NOT NULL AND password != '' "
+                "AND (password_hash IS NULL OR password_hash='')") == 0) {
+                MYSQL_RES* res = mysql_store_result(sql);
+                if (res) {
+                    MYSQL_ROW row;
+                    while ((row = mysql_fetch_row(res)) != nullptr) {
+                        std::string id = row[0] ? row[0] : "";
+                        std::string plain = row[1] ? row[1] : "";
+                        if (id.empty() || plain.empty()) continue;
+                        std::string saltHex;
+                        std::string hashHex;
+                        if (!generateSalt_(saltHex) || !hashPassword_(plain, saltHex, hashHex)) continue;
+                        std::string update =
+                            "UPDATE user SET password_hash='" + hashHex + "', password_salt='" + saltHex +
+                            "', password='' WHERE id=" + id;
+                        mysql_query(sql, update.c_str());
+                    }
+                    mysql_free_result(res);
+                }
+            }
+        }
+
+        schemaReady_ = true;
+    }
+#endif
+
     SqlConnPool() {}
     ~SqlConnPool() {
 #if SQL_CONNPOOL_HAS_MYSQL
@@ -232,6 +371,7 @@ private:
 
     std::queue<MYSQL*> connQue_;
     std::mutex mtx_;
+    bool schemaReady_ = false;
 };
 
 // RAII 资源管理：自动获取和释放连接

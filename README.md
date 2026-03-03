@@ -35,15 +35,23 @@ Then open:
 
 The server reads DB config from environment variables:
 
-- `WS_DB_HOST` (default `localhost`)
+- `WS_DB_HOST` (default `127.0.0.1`)
 - `WS_DB_PORT` (default `3306`)
 - `WS_DB_USER` (default `root`)
-- `WS_DB_PASSWORD` (default empty)
+- `WS_DB_PASSWORD` (default `123456`)
 - `WS_DB_NAME` (default `webdb`)
 - `WS_DB_POOL_SIZE` (default `10`)
 
 If these variables are not provided, the server uses local defaults:
 `127.0.0.1:3306`, user `root`, password `123456`, database `webdb`.
+
+## Password Storage
+
+- Passwords are stored as `PBKDF2-HMAC-SHA256` hashes with per-user random salt.
+- On startup, legacy plaintext rows in `user.password` are auto-migrated to:
+  - `user.password_hash`
+  - `user.password_salt`
+- After migration, plaintext `user.password` is cleared.
 
 ## Notes
 

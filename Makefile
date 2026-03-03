@@ -17,6 +17,9 @@ MYSQL_LIBDIR := $(shell $(MYSQL_CONFIG) --variable=pkglibdir 2>/dev/null)
 # -Wall: 显示所有警告信息
 # -g: 添加调试信息（方便使用 gdb 调试）
 CXXFLAGS = -std=c++11 -O3 -Wall -g
+ifneq ($(wildcard /opt/homebrew/opt/openssl@3/include),)
+	CXXFLAGS += -I/opt/homebrew/opt/openssl@3/include
+endif
 ifneq ($(MYSQL_CFLAGS),)
 	CXXFLAGS += $(MYSQL_CFLAGS)
 else
