@@ -152,6 +152,71 @@ public:
 #endif
     }
 
+    bool UserExists(const std::string& username) {
+#if SQL_CONNPOOL_HAS_MYSQL
+        MYSQL* sql = GetConn();
+        if (!sql) return false;
+
+        std::string userEsc(username.size() * 2 + 1, '\0');
+        unsigned long userLen = mysql_real_escape_string(sql, &userEsc[0], username.c_str(), username.size());
+        userEsc.resize(userLen);
+
+        std::string query = "SELECT username FROM user WHERE username='" + userEsc + "' LIMIT 1";
+        bool exists = false;
+        if (mysql_query(sql, query.c_str()) == 0) {
+            MYSQL_RES* res = mysql_store_result(sql);
+            if (res) {
+                exists = (mysql_num_rows(res) > 0);
+                mysql_free_result(res);
+            }
+        } else {
+            LOG_ERROR("SQL Query Error!");
+        }
+        FreeConn(sql);
+        return exists;
+#else
+        (void)username;
+        return false;
+#endif
+    }
+
+    bool CreateUser(const std::string& username, const std::string& password) {
+#if SQL_CONNPOOL_HAS_MYSQL
+        MYSQL* sql = GetConn();
+        if (!sql) return false;
+
+        std::string userEsc(username.size() * 2 + 1, '\0');
+        unsigned long userLen = mysql_real_escape_string(sql, &userEsc[0], username.c_str(), username.size());
+        userEsc.resize(userLen);
+
+        std::string passEsc(password.size() * 2 + 1, '\0');
+        unsigned long passLen = mysql_real_escape_string(sql, &passEsc[0], password.c_str(), password.size());
+        passEsc.resize(passLen);
+
+        std::string query = "INSERT INTO user(username, password) VALUES('" + userEsc + "', '" + passEsc + "')";
+        bool ok = false;
+        if (mysql_query(sql, query.c_str()) == 0) {
+            ok = true;
+        } else if (mysql_errno(sql) == 1054) {
+            // Compatible with legacy schema: table `user` only has `username`.
+            std::string legacyQuery = "INSERT INTO user(username) VALUES('" + userEsc + "')";
+            ok = (mysql_query(sql, legacyQuery.c_str()) == 0);
+            if (!ok) LOG_ERROR("SQL Insert Error!");
+        } else if (mysql_errno(sql) == 1062) {
+            ok = false;
+        } else {
+            LOG_ERROR("SQL Insert Error!");
+        }
+
+        FreeConn(sql);
+        return ok;
+#else
+        (void)username;
+        (void)password;
+        return false;
+#endif
+    }
+
 private:
     SqlConnPool() {}
     ~SqlConnPool() {

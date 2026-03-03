@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>用户登录</title>
+  <title>用户注册</title>
   <style>
     :root {
       --bg-1: #f4efe6;
@@ -11,9 +11,9 @@
       --card: #fffdf8;
       --ink: #20232a;
       --muted: #6f7782;
-      --accent: #1558d6;
-      --accent-2: #0f3f9d;
-      --ring: #9ec2ff;
+      --accent: #f2782a;
+      --accent-2: #d84e1b;
+      --ring: #ffd0b3;
     }
     * { box-sizing: border-box; }
     body {
@@ -22,8 +22,8 @@
       font-family: "Avenir Next", "PingFang SC", "Helvetica Neue", sans-serif;
       color: var(--ink);
       background:
-        radial-gradient(80rem 40rem at 10% -20%, #ffdba6 0%, transparent 60%),
-        radial-gradient(60rem 50rem at 100% 0%, #bfd8ff 0%, transparent 55%),
+        radial-gradient(70rem 35rem at 0% -20%, #ffdbb4 0%, transparent 62%),
+        radial-gradient(65rem 45rem at 100% 0%, #c4d9ff 0%, transparent 55%),
         linear-gradient(135deg, var(--bg-1), var(--bg-2));
       display: grid;
       place-items: center;
@@ -70,7 +70,7 @@
       background: #fff;
     }
     input:focus {
-      border-color: var(--accent);
+      border-color: var(--accent-2);
       box-shadow: 0 0 0 4px var(--ring);
     }
     button {
@@ -109,19 +109,22 @@
 </head>
 <body>
   <main class="panel">
-    <h1>用户登录</h1>
-    <p>请输入你的账号和密码</p>
-    <form action="/login" method="post">
+    <h1>用户注册</h1>
+    <p>创建一个新的账号</p>
+    <form action="/register" method="post">
       <label for="username">账号</label>
       <input id="username" name="username" type="text" placeholder="请输入账号" required>
 
       <label for="password">密码</label>
       <input id="password" name="password" type="password" placeholder="请输入密码" required>
 
-      <button type="submit">登录</button>
+      <label for="confirm_password">确认密码</label>
+      <input id="confirm_password" name="confirm_password" type="password" placeholder="请再次输入密码" required>
+
+      <button type="submit">注册</button>
     </form>
-    <div class="hint">表单会以 POST /login 提交到当前服务。</div>
-    <div class="switch">还没有账号？<a href="/register">去注册</a></div>
+    <div class="hint">表单会以 POST /register 提交到当前服务。</div>
+    <div class="switch">已有账号？<a href="/login">返回登录</a></div>
   </main>
 </body>
 </html>

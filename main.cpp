@@ -101,6 +101,21 @@ std::unordered_map<std::string, std::string> parseFormUrlEncoded(const std::stri
     return kv;
 }
 
+std::string buildResultPage(const std::string& title, const std::string& message,
+                            const std::string& linkHref, const std::string& linkText) {
+    return "<!doctype html><html lang=\"zh-CN\"><head><meta charset=\"utf-8\">"
+           "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"
+           "<title>" + title + "</title>"
+           "<style>body{font-family:\"Avenir Next\",\"PingFang SC\",sans-serif;background:#f5f7fb;"
+           "margin:0;display:grid;place-items:center;min-height:100vh;padding:20px}"
+           ".box{width:min(460px,100%);background:#fff;border-radius:14px;padding:24px;"
+           "box-shadow:0 16px 40px rgba(24,39,75,.16)}h1{margin:0 0 10px;font-size:28px}"
+           "p{margin:0 0 18px;color:#5d6778;font-size:15px}a{display:inline-block;"
+           "padding:10px 16px;border-radius:10px;background:#1f58d8;color:#fff;text-decoration:none;"
+           "font-weight:700}</style></head><body><main class=\"box\"><h1>" + title + "</h1><p>" + message +
+           "</p><a href=\"" + linkHref + "\">" + linkText + "</a></main></body></html>";
+}
+
 int getEnvIntOrDefault(const char* key, int fallback) {
     const char* v = std::getenv(key);
     if (!v || !*v) return fallback;
@@ -243,7 +258,7 @@ void handleClient(int clientFd, Poller* poller) {
 
     std::string method = conn->parser.method();
 
-    // 3. 业务路由：动态登录 vs 静态文件
+    // 3. 业务路由：动态登录 vs 注册 vs 静态文件
     if (path == "/login") {
         if (method == "GET") {
             response.init(SRC_DIR, std::string("/login.html"), conn->parser.isKeepAlive());
@@ -284,7 +299,85 @@ void handleClient(int clientFd, Poller* poller) {
             removeConnCtx(clientFd);
             return;
         }
-    } 
+    }
+    else if (path == "/register") {
+        if (method == "GET") {
+            response.init(SRC_DIR, std::string("/register.html"), conn->parser.isKeepAlive());
+            response.makeResponse(header, body);
+            if (!writeAll(clientFd, header, response.file(), response.fileSize())) {
+                close(clientFd);
+                removeConnCtx(clientFd);
+                return;
+            }
+        } else if (method == "POST") {
+            std::unordered_map<std::string, std::string> form = parseFormUrlEncoded(conn->parser.body());
+            std::string username = form.count("username") ? form["username"] : "";
+            std::string password = form.count("password") ? form["password"] : "";
+            std::string confirmPassword = form.count("confirm_password") ? form["confirm_password"] : "";
+
+            if (username.empty() || password.empty() || confirmPassword.empty()) {
+                body = buildResultPage("注册失败", "账号、密码、确认密码都不能为空。", "/register", "返回注册");
+                header = "HTTP/1.1 400 Bad Request\r\nContent-Type: text/html\r\n";
+                header += "Content-Length: " + to_string(body.size()) + "\r\n";
+                header += "Connection: " + string(conn->parser.isKeepAlive() ? "keep-alive" : "close") + "\r\n\r\n";
+                if (!writeAll(clientFd, header, body.data(), body.size())) {
+                    close(clientFd);
+                    removeConnCtx(clientFd);
+                    return;
+                }
+            } else if (password != confirmPassword) {
+                body = buildResultPage("注册失败", "两次输入的密码不一致。", "/register", "返回注册");
+                header = "HTTP/1.1 400 Bad Request\r\nContent-Type: text/html\r\n";
+                header += "Content-Length: " + to_string(body.size()) + "\r\n";
+                header += "Connection: " + string(conn->parser.isKeepAlive() ? "keep-alive" : "close") + "\r\n\r\n";
+                if (!writeAll(clientFd, header, body.data(), body.size())) {
+                    close(clientFd);
+                    removeConnCtx(clientFd);
+                    return;
+                }
+            } else if (SqlConnPool::Instance()->UserExists(username)) {
+                body = buildResultPage("注册失败", "账号已存在，请更换后重试。", "/register", "返回注册");
+                header = "HTTP/1.1 409 Conflict\r\nContent-Type: text/html\r\n";
+                header += "Content-Length: " + to_string(body.size()) + "\r\n";
+                header += "Connection: " + string(conn->parser.isKeepAlive() ? "keep-alive" : "close") + "\r\n\r\n";
+                if (!writeAll(clientFd, header, body.data(), body.size())) {
+                    close(clientFd);
+                    removeConnCtx(clientFd);
+                    return;
+                }
+            } else if (SqlConnPool::Instance()->CreateUser(username, password)) {
+                header = "HTTP/1.1 302 Found\r\nLocation: /login\r\n";
+                header += "Content-Length: 0\r\n";
+                header += "Connection: " + string(conn->parser.isKeepAlive() ? "keep-alive" : "close") + "\r\n\r\n";
+                if (!writeAll(clientFd, header, nullptr, 0)) {
+                    close(clientFd);
+                    removeConnCtx(clientFd);
+                    return;
+                }
+                LOG_INFO("Register Processed for FD[%d], user=%s, Success: 1", clientFd, username.c_str());
+            } else {
+                body = buildResultPage("注册失败", "创建账号失败，请稍后再试。", "/register", "返回注册");
+                header = "HTTP/1.1 500 Internal Server Error\r\nContent-Type: text/html\r\n";
+                header += "Content-Length: " + to_string(body.size()) + "\r\n";
+                header += "Connection: " + string(conn->parser.isKeepAlive() ? "keep-alive" : "close") + "\r\n\r\n";
+                if (!writeAll(clientFd, header, body.data(), body.size())) {
+                    close(clientFd);
+                    removeConnCtx(clientFd);
+                    return;
+                }
+                LOG_INFO("Register Processed for FD[%d], user=%s, Success: 0", clientFd, username.c_str());
+            }
+        } else {
+            body = "<html><body><h1>405 Method Not Allowed</h1></body></html>";
+            header = "HTTP/1.1 405 Method Not Allowed\r\nContent-Type: text/html\r\n";
+            header += "Content-Length: " + to_string(body.size()) + "\r\n";
+            header += "Connection: close\r\n\r\n";
+            writeAll(clientFd, header, body.data(), body.size());
+            close(clientFd);
+            removeConnCtx(clientFd);
+            return;
+        }
+    }
     else {
         response.init(SRC_DIR, path, conn->parser.isKeepAlive());
         response.makeResponse(header, body);
