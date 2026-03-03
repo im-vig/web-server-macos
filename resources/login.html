@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>用户登录</title>
+  <style>
+    :root {
+      --bg-1: #f4efe6;
+      --bg-2: #e3edf7;
+      --card: #fffdf8;
+      --ink: #20232a;
+      --muted: #6f7782;
+      --accent: #1558d6;
+      --accent-2: #0f3f9d;
+      --ring: #9ec2ff;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      font-family: "Avenir Next", "PingFang SC", "Helvetica Neue", sans-serif;
+      color: var(--ink);
+      background:
+        radial-gradient(80rem 40rem at 10% -20%, #ffdba6 0%, transparent 60%),
+        radial-gradient(60rem 50rem at 100% 0%, #bfd8ff 0%, transparent 55%),
+        linear-gradient(135deg, var(--bg-1), var(--bg-2));
+      display: grid;
+      place-items: center;
+      padding: 20px;
+    }
+    .panel {
+      width: min(460px, 100%);
+      background: var(--card);
+      border: 1px solid #e8e3da;
+      border-radius: 18px;
+      padding: 28px 24px 24px;
+      box-shadow: 0 20px 45px rgba(26, 40, 65, 0.18);
+      animation: rise 380ms ease-out both;
+    }
+    @keyframes rise {
+      from { opacity: 0; transform: translateY(14px) scale(0.98); }
+      to { opacity: 1; transform: translateY(0) scale(1); }
+    }
+    h1 {
+      margin: 0 0 8px;
+      font-size: 30px;
+      letter-spacing: .2px;
+    }
+    p {
+      margin: 0 0 20px;
+      color: var(--muted);
+      font-size: 14px;
+    }
+    label {
+      display: block;
+      margin: 14px 0 6px;
+      font-size: 14px;
+      font-weight: 600;
+    }
+    input {
+      width: 100%;
+      height: 44px;
+      border: 1px solid #d5dbe4;
+      border-radius: 11px;
+      padding: 0 13px;
+      font-size: 15px;
+      outline: none;
+      transition: border-color .2s, box-shadow .2s;
+      background: #fff;
+    }
+    input:focus {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 4px var(--ring);
+    }
+    button {
+      margin-top: 18px;
+      width: 100%;
+      height: 46px;
+      border: none;
+      border-radius: 12px;
+      background: linear-gradient(140deg, var(--accent), var(--accent-2));
+      color: #fff;
+      font-size: 15px;
+      font-weight: 700;
+      cursor: pointer;
+      transition: transform .15s ease, filter .2s ease;
+    }
+    button:hover { filter: brightness(1.05); }
+    button:active { transform: translateY(1px); }
+    .hint {
+      margin-top: 12px;
+      font-size: 12px;
+      color: var(--muted);
+    }
+  </style>
+</head>
+<body>
+  <main class="panel">
+    <h1>用户登录</h1>
+    <p>请输入你的账号和密码</p>
+    <form action="/login" method="post">
+      <label for="username">账号</label>
+      <input id="username" name="username" type="text" placeholder="请输入账号" required>
+
+      <label for="password">密码</label>
+      <input id="password" name="password" type="password" placeholder="请输入密码" required>
+
+      <button type="submit">登录</button>
+    </form>
+    <div class="hint">表单会以 POST /login 提交到当前服务。</div>
+  </main>
+</body>
+</html>

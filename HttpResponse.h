@@ -7,6 +7,7 @@
 #include <sys/mman.h>
 #include <fcntl.h>
 #include <unistd.h>
+#include <vector>
 #include "Log.h"
 
 class HttpResponse {
@@ -18,7 +19,7 @@ public:
 
     ~HttpResponse() { unmapFile(); }
 
-    void init(const std::string& srcDir, std::string& path, bool isKeepAlive = false, int code = -1) {
+    void init(const std::string& srcDir, const std::string& path, bool isKeepAlive = false, int code = -1) {
         if(mmFile_) unmapFile();
         srcDir_ = srcDir;
         path_ = path;
@@ -30,12 +31,22 @@ public:
 
     // 判断请求的文件是否存在、是否可读
     void makeResponse(std::string& header, std::string& body) {
-        if(stat((srcDir_ + path_).c_str(), &mmFileStat_) < 0 || S_ISDIR(mmFileStat_.st_mode)) {
-            code_ = 404;
-        } else if(!(mmFileStat_.st_mode & S_IROTH)) {
+        std::string safePath;
+        if (!sanitizePath_(path_, safePath)) {
             code_ = 403;
-        } else if(code_ == -1) {
-            code_ = 200;
+            path_ = "/403.html";
+        } else {
+            path_ = safePath;
+        }
+
+        if (code_ == -1) {
+            if(stat((srcDir_ + path_).c_str(), &mmFileStat_) < 0 || S_ISDIR(mmFileStat_.st_mode)) {
+                code_ = 404;
+            } else if(!(mmFileStat_.st_mode & S_IROTH)) {
+                code_ = 403;
+            } else {
+                code_ = 200;
+            }
         }
         errorHtml_();
         addStateLine_(header);
@@ -63,6 +74,33 @@ public:
     }
 
 private:
+    bool sanitizePath_(const std::string& raw, std::string& out) {
+        if (raw.empty() || raw[0] != '/' || raw.find('\0') != std::string::npos) return false;
+
+        std::string path = raw;
+        size_t qPos = path.find('?');
+        if (qPos != std::string::npos) path = path.substr(0, qPos);
+
+        std::vector<std::string> segs;
+        size_t i = 1;
+        while (i <= path.size()) {
+            size_t j = path.find('/', i);
+            if (j == std::string::npos) j = path.size();
+            std::string token = path.substr(i, j - i);
+            if (token == "..") return false;
+            if (!token.empty() && token != ".") segs.push_back(token);
+            i = j + 1;
+        }
+
+        out = "/";
+        for (size_t idx = 0; idx < segs.size(); ++idx) {
+            out += segs[idx];
+            if (idx + 1 < segs.size()) out += "/";
+        }
+        if (out == "/") out = "/index.html";
+        return true;
+    }
+
     void addStateLine_(std::string& header) {
         header += "HTTP/1.1 " + std::to_string(code_) + " " + SUFFIX.at(code_) + "\r\n";
     }

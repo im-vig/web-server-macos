@@ -1,8 +1,15 @@
 # 编译器
 CXX = g++
 UNAME_S := $(shell uname -s)
-MYSQL_CFLAGS := $(shell mysql_config --cflags 2>/dev/null)
-MYSQL_LIBS := $(shell mysql_config --libs 2>/dev/null)
+MYSQL_CONFIG := $(shell command -v mysql_config 2>/dev/null)
+ifeq ($(MYSQL_CONFIG),)
+  ifneq ($(wildcard /opt/homebrew/opt/mysql-client/bin/mysql_config),)
+    MYSQL_CONFIG := /opt/homebrew/opt/mysql-client/bin/mysql_config
+  endif
+endif
+MYSQL_CFLAGS := $(shell $(MYSQL_CONFIG) --cflags 2>/dev/null)
+MYSQL_LIBS := $(shell $(MYSQL_CONFIG) --libs 2>/dev/null)
+MYSQL_LIBDIR := $(shell $(MYSQL_CONFIG) --variable=pkglibdir 2>/dev/null)
 
 # 编译选项
 # -std=c++11: 使用 C++11 标准
@@ -28,6 +35,12 @@ SOURCES = main.cpp
 LIBS = -lpthread
 ifneq ($(MYSQL_LIBS),)
 	LIBS += $(MYSQL_LIBS)
+	ifneq ($(MYSQL_LIBDIR),)
+		LIBS += -Wl,-rpath,$(MYSQL_LIBDIR)
+	endif
+	ifneq ($(wildcard /opt/homebrew/lib),)
+		LIBS += -L/opt/homebrew/lib -Wl,-rpath,/opt/homebrew/lib
+	endif
 endif
 
 # 默认执行的目标
@@ -36,6 +49,10 @@ all: $(TARGET)
 # 链接生成可执行文件
 $(TARGET): $(SOURCES)
 	$(CXX) $(CXXFLAGS) $(SOURCES) -o $(TARGET) $(LIBS)
+ifneq ($(MYSQL_LIBDIR),)
+	install_name_tool -change libssl.3.dylib @rpath/libssl.3.dylib $(TARGET) || true
+	install_name_tool -change libcrypto.3.dylib @rpath/libcrypto.3.dylib $(TARGET) || true
+endif
 
 # 清理编译产生的文件
 clean:
