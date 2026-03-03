@@ -7,12 +7,12 @@
 #include <arpa/inet.h>
 #include <unistd.h>
 #include <fcntl.h>
-#include <sys/epoll.h>
 #include <sys/uio.h>
 #include <errno.h>
 #include <signal.h> // 信号处理头文件
 
 // 引入所有自定义模块
+#include "Poller.h"
 #include "ThreadPool.h"
 #include "Log.h"
 #include "Timer.h"
@@ -42,18 +42,14 @@ int setNonBlocking(int fd) {
     return old;
 }
 
-void addFd(int epollFd, int fd, bool oneshot) {
-    epoll_event ev;
-    ev.data.fd = fd;
-    ev.events = EPOLLIN | EPOLLET | EPOLLRDHUP;
-    if (oneshot) ev.events |= EPOLLONESHOT;
-    epoll_ctl(epollFd, EPOLL_CTL_ADD, fd, &ev);
+bool addFd(Poller& poller, int fd, bool oneshot) {
     setNonBlocking(fd);
+    return poller.addFd(fd, oneshot);
 }
 
 // ================= 核心业务处理 =================
 
-void handleClient(int clientFd, int epollFd) {
+void handleClient(int clientFd, Poller* poller) {
     Buffer buff;
     int saveErrno = 0;
     HttpParser parser;
@@ -79,28 +75,7 @@ void handleClient(int clientFd, int epollFd) {
 
     // 3. 业务路由：动态登录 vs 静态文件
     if (path == "/login") {
-        MYSQL* sql;
-        SqlConnRAII(&sql, SqlConnPool::Instance());
-        
-        if(!sql) {
-            LOG_ERROR("Database connection failed!");
-            body = "<html><body><h1>500 Error</h1></body></html>";
-            header = "HTTP/1.1 500 Internal Error\r\nContent-Length: " + to_string(body.size()) + "\r\n\r\n";
-            send(clientFd, (header + body).c_str(), header.size() + body.size(), 0);
-            close(clientFd); return;
-        }
-
-        char order[256] = {0};
-        snprintf(order, 256, "SELECT username FROM user WHERE username='admin' LIMIT 1");
-        
-        bool loginSuccess = false;
-        if(mysql_query(sql, order)) {
-            LOG_ERROR("SQL Query Error!");
-        } else {
-            MYSQL_RES* res = mysql_store_result(sql);
-            if(mysql_num_rows(res) > 0) loginSuccess = true;
-            mysql_free_result(res);
-        }
+        bool loginSuccess = SqlConnPool::Instance()->CheckAdminUserExists("admin");
 
         body = loginSuccess ? "<html><body><h1>Login Success!</h1></body></html>" 
                             : "<html><body><h1>Login Failed!</h1></body></html>";
@@ -131,10 +106,7 @@ void handleClient(int clientFd, int epollFd) {
 
     // 4. 长连接维持逻辑
     if (parser.isKeepAlive()) {
-        struct epoll_event ev = {0};
-        ev.data.fd = clientFd;
-        ev.events = EPOLLIN | EPOLLET | EPOLLRDHUP | EPOLLONESHOT;
-        epoll_ctl(epollFd, EPOLL_CTL_MOD, clientFd, &ev);
+        if (!poller->modFd(clientFd, true)) close(clientFd);
     } else {
         close(clientFd);
     }
@@ -148,6 +120,7 @@ int main(int argc, char* argv[]) {
 
     // 注册信号处理器：优雅退出
     signal(SIGINT, handle_sig);
+    signal(SIGPIPE, SIG_IGN);
 
     // 1. 初始化异步日志
     AsyncLogger::getInstance()->init("./server.log");
@@ -156,6 +129,11 @@ int main(int argc, char* argv[]) {
     // 2. 初始化数据库连接池
     SqlConnPool::Instance()->Init("localhost", 3306, "root", "123456", "webdb", 10);
     
+    Poller poller;
+    if (!poller.isValid()) {
+        LOG_ERROR("Poller init error!");
+        return -1;
+    }
     ThreadPool pool(8);
     TimerManager timer;
 
@@ -170,39 +148,55 @@ int main(int argc, char* argv[]) {
     addr.sin_addr.s_addr = INADDR_ANY;
     addr.sin_port = htons(port);
 
-    if (bind(listenFd, (struct sockaddr*)&addr, sizeof(addr)) == -1) {
+    if (::bind(listenFd, (struct sockaddr*)&addr, sizeof(addr)) == -1) {
         LOG_ERROR("Bind Error!");
         return -1;
     }
     listen(listenFd, 128);
 
-    int epollFd = epoll_create(1);
-    addFd(epollFd, listenFd, false);
-    epoll_event events[1024];
+    if (!addFd(poller, listenFd, false)) {
+        LOG_ERROR("Add listen fd to poller failed!");
+        close(listenFd);
+        return -1;
+    }
+    vector<PollerEvent> events;
 
     // 4. 事件循环：由 g_is_running 控制
     while (g_is_running) {
         int timeout = timer.getNextTick();
-        int n = epoll_wait(epollFd, events, 1024, timeout);
+        int n = poller.wait(timeout, events);
+        if (n < 0) {
+            if (errno == EINTR) continue;
+            LOG_ERROR("Poller wait error!");
+            break;
+        }
 
         for (int i = 0; i < n; i++) {
-            int fd = events[i].data.fd;
-            if (fd == listenFd) {
-                struct sockaddr_in client;
-                socklen_t len = sizeof(client);
+            int fd = events[i].fd;
+            if (fd == listenFd && events[i].readable) {
                 while (true) {
+                    struct sockaddr_in client;
+                    socklen_t len = sizeof(client);
                     int connFd = accept(listenFd, (struct sockaddr*)&client, &len);
-                    if (connFd < 0) break;
-                    addFd(epollFd, connFd, true);
+                    if (connFd < 0) {
+                        if (errno == EAGAIN || errno == EWOULDBLOCK) break;
+                        if (errno == EINTR) continue;
+                        LOG_ERROR("Accept Error!");
+                        break;
+                    }
+                    if (!addFd(poller, connFd, true)) {
+                        close(connFd);
+                        continue;
+                    }
                     timer.addTimer(connFd, 20000, [connFd]() { close(connFd); });
                     LOG_INFO("New Connection from %s, FD[%d]", inet_ntoa(client.sin_addr), connFd);
                 }
             } 
-            else if (events[i].events & EPOLLIN) {
+            else if (events[i].readable) {
                 timer.addTimer(fd, 20000, [fd]() { close(fd); });
-                pool.enqueue([fd, epollFd] { handleClient(fd, epollFd); });
+                pool.enqueue([fd, &poller] { handleClient(fd, &poller); });
             } 
-            else if (events[i].events & (EPOLLRDHUP | EPOLLHUP | EPOLLERR)) {
+            else if (events[i].hangup || events[i].error) {
                 close(fd);
                 timer.delTimer(fd);
             }
@@ -212,7 +206,6 @@ int main(int argc, char* argv[]) {
     // 5. 退出循环后的清理工作
     LOG_INFO("========== Server Shutdown Gracefully ==========");
     close(listenFd);
-    close(epollFd);
     
     // 手动刷新日志并留给后台线程一点时间写完
     AsyncLogger::getInstance()->flush();

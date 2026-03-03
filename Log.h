@@ -34,9 +34,9 @@ public:
         time_t t = now.tv_sec;
         struct tm* sys_tm = localtime(&t);
         
-        int n = snprintf(buf, 128, "%d-%02d-%02d %02d:%02d:%02d.%06ld ",
+        int n = snprintf(buf, 128, "%d-%02d-%02d %02d:%02d:%02d.%06lld ",
                          sys_tm->tm_year + 1900, sys_tm->tm_mon + 1, sys_tm->tm_mday,
-                         sys_tm->tm_hour, sys_tm->tm_min, sys_tm->tm_sec, now.tv_usec);
+                         sys_tm->tm_hour, sys_tm->tm_min, sys_tm->tm_sec, (long long)now.tv_usec);
 
         va_list valist;
         va_start(valist, format);
